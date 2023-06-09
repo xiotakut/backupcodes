@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
+#include <set>
+#include <sstream>
 #include "lexer.tab.h"
 
 extern int yylex();
@@ -18,6 +20,7 @@ enum Type { Integer, Array, Void };
 struct Symbol {
   std::string name;
   Type type;
+  bool param_or_not;
 };
 
 struct Function {
@@ -84,7 +87,8 @@ void add_variable_to_symbol_table(std::string &value, Type t) {
     return;
   }
 
-  //check the valie deinfing more than once
+  //check if the value is defined more than once
+   printf(("adding variable " + value + "\n").c_str());
    Function *f = get_function();
    for (const auto& s : f->declarations) {
     if (s.name == value) {
@@ -96,8 +100,8 @@ void add_variable_to_symbol_table(std::string &value, Type t) {
   Symbol s;
   s.name = value;
   s.type = t;
-  Function *f = get_function();
-  f->declarations.push_back(s);
+  Function *func = get_function();
+  func->declarations.push_back(s);
 }
 
 // a function to print out the symbol table to the screen
@@ -117,6 +121,8 @@ void print_symbol_table(void) {
 //helper function to create temp_variables
 std::string create_temp(){
 	static int num = 0;
+  std::stringstream ss;
+  ss << num;
 	std::string value = "_temp" + std::to_string(num);
 	num+= 1;
 	return value;
@@ -127,6 +133,14 @@ std::string decl_temp_code(std::string &temp){
 	return std::string(". ") + temp + std::string("\n");
 }
 
+//helper function to create declaration code for a label, uses temp_variables
+std::string decl_label_code(std::string &temp){
+	return std::string(": ") + temp + std::string("\n");
+}
+
+
+
+
 struct CodeNode {
     std::string code; // generated code as a string.
     std::string name;
@@ -134,7 +148,7 @@ struct CodeNode {
 
 struct DeclNode {
     Type type;
-    std::string name;
+    CodeNode node;
 };
 
 %}
@@ -142,7 +156,7 @@ struct DeclNode {
 %union {
   char *op_val;
   struct CodeNode *node;
-  Type type1;
+  struct DeclNode *decl;
 }
 
 %start program
@@ -153,8 +167,8 @@ struct DeclNode {
 %token VOID 
 
 %type <node> functions
-//todo: add more type <node>s, for params, statements, etc.
-%type <type1> type
+%type <decl> type //todo: add more type <node>s, for params, statements, etc.
+%type <decl> var_list
 %type <node> statement
 %type <node> statement_list
 %type <node> assignment_statement
@@ -183,8 +197,10 @@ struct DeclNode {
 
 program:
    %empty { // this happens last.
+   printf("empty here");
                 CodeNode *node = new CodeNode;
                 $$ = node;
+		std::string code = node->code;
                 printf("Generated code:\n");
                 printf("%s\n", code.c_str());
 
@@ -225,11 +241,7 @@ program:
 
 functions:
   function_definition {
-      CodeNode *func  = $1;
-      std::string code = func->code;
-      CodeNode *node = new CodeNode;
-      node->code = code;
-      $$ = node;
+      $$ = $1;
    }
   | function_definition functions {
      CodeNode *func  = $1;
@@ -242,13 +254,17 @@ functions:
   ;
 
 function_definition:
-  type IDENT LPR params RPR block_statement {
+  type IDENT{
+    std::string func_name = $2;
+    add_function_to_symbol_table(func_name);
+  } LPR params RPR block_statement {
+     DeclNode *type =$1;
+     Type t = type->type;
      std::string func_name = $2;
-     CodeNode *params = $4;
-     CodeNode *stmts  = $6;
+     CodeNode *params = $5;
+     CodeNode *stmts  = $7;
      std::string code = std::string("func ") + func_name + std::string("\n");
-     Type t = $1;
-     add_variable_to_symbol_table(func_name, t);
+
      code += params->code;
      code += stmts->code;
      code += std::string("endfunc\n");
@@ -272,7 +288,9 @@ params:
 
 param_list:
   type IDENT {
-  	Type t = $1;
+     DeclNode *type =$1;
+     Type t = type->type;
+  	
   	std::string value = $2;
   	add_variable_to_symbol_table(value, t);
     std::string code = std::string("param ") + value + std::string("\n");
@@ -282,7 +300,9 @@ param_list:
 
   }
   | type IDENT COMMA param_list {
-  	Type t = $1;
+     DeclNode *type =$1;
+     Type t = type->type;
+    
     std::string value = $2;
     CodeNode *list = $4;
     add_variable_to_symbol_table(value, t);
@@ -295,12 +315,19 @@ param_list:
 
 type:
   INT {
-  	Type *t = Integer;
-  	$$ = t;
+  	DeclNode *node = new DeclNode;
+	node->type = Integer;
+	CodeNode *temp_node = new CodeNode;
+	node->node = *temp_node;
+  	$$ = node;
   }
   | VOID {
-  	Type *t = Void;
-  	$$ = t;
+
+    DeclNode *node = new DeclNode;
+    	node->type = Void;
+    	CodeNode *temp_node = new CodeNode;
+        node->node = *temp_node;
+      	$$ = node;
   }
   ;
 
@@ -371,19 +398,24 @@ call_statement:
   	std::string ident = $1;
     CodeNode *params = $3;
 
-    if (!find(ident)) {
-      	std::string message = std::string("unidentified symbol '") + ident + std::string("'");
-        yyerror(message.c_str());
-        return;
-    }
-
-	std::string temp = create_temp();
+    for(int i=0; i<symbol_table.size(); i++) {
+    if( symbol_table[i].name == ident){
+	  std::string temp = create_temp();
     std::string code = decl_temp_code(temp) + params->code;
     code += std::string("call ") + ident + std::string(", ") + temp;
     CodeNode *node = new CodeNode;
     node->code = code;
     node->name = temp;
     $$ = node;
+    break;
+    }
+    else if(symbol_table[i].name != ident && i == symbol_table.size()-1){
+    std::string message = std::string("unidentified symbol '") + ident + std::string("'");
+    yyerror(message.c_str());
+    }
+
+    }
+
   }
   ;
 
@@ -421,16 +453,7 @@ assignment_statement:
     if (!find(ident)) {
     	std::string message = std::string("unidentified symbol '") + ident + std::string("'");
         yyerror(message.c_str());
-        return;
     }
-
-     // array index specification error
-     Symbol* s = find(ident);
-    if(s->type == Array){
-        std::string message = std::string("Trying to use array '") + ident + std::string("' as a regular integer");
-        yyerror(message.c_str());
-    }
-
     std::string code = expression->code + std::string("= ") + ident + std::string(", ") + expression->name + std::string("\n");
     CodeNode *node = new CodeNode;
     node->code = code;
@@ -444,17 +467,17 @@ assignment_statement:
         yyerror(message.c_str());
     }
 
-    //array index specification error
-     Symbol* s = find(array_name);
-    if(s->type != Array){
-        std::string message = std::string("Trying to use regular integer '") + array_name + std::string("' as an array");
-        yyerror(message.c_str());
-    }
+    //array index specification error	//todo: this does not make sense, the high level code is: a[x + 2] = y + 3;, what is this error?
+    //Symbol* s = find(array_name);
+    //if(s->type != Array){
+    //    std::string message = std::string("Trying to use regular integer '") + array_name + std::string("' as an array");
+    //    yyerror(message.c_str());
+    //}
 
     CodeNode *src = $6;
     CodeNode *index = $3;
     std::string code = index->code + src->code;
-    code += std::string("[]= ") + array_name + std::string(", ") + src->name + std::string(", ") + index->name + std::string("\n");
+    code += std::string("[]= ") + array_name + std::string(", ") + index->name + std::string(", ") + src->name + std::string("\n");
     CodeNode *node = new CodeNode;
     node->code = code;
     $$ = node;
@@ -467,18 +490,62 @@ if_statement:
 	CodeNode *cmp = $3;
 	CodeNode *on_true = $5;
 
-	std::string code = cmp->code + on_true->code;
-	//code =
+	std::string code = cmp->code;
+	std::string temp = create_temp();
+	code += decl_temp_code(temp);
+	code += std::string("! ") + temp + std::string(", ") + cmp->name + std::string("\n");	//! false, original exp
+	std::string on_false = create_temp();
+	code += std::string("?:= ") + on_false + std::string(", ") + temp + std::string("\n");	//exit if statement if false
+	code += on_true->code;																	//inside on_true code
+	code += decl_label_code(on_false);														//exit if statement label
+	CodeNode *node = new CodeNode;
+	node->code = code;
+	$$ = node;
 
   }
   | IF LPR comparison_expression RPR block_statement ELSE block_statement {
+	CodeNode *cmp = $3;
+	CodeNode *on_true = $5;
+	CodeNode *on_false = $7;
 
+	std::string code = cmp->code;
+	std::string temp = create_temp();
+	code += decl_temp_code(temp);
+	code += std::string("! ") + temp + std::string(", ") + cmp->name + std::string("\n");
+	std::string on_false_label = create_temp();
+	std::string exit_if = create_temp();
+
+	code += std::string("?:= ") + on_false_label + std::string(", ") + temp + std::string("\n");	//jump to false if false
+	code += on_true->code;																	//true code
+	code += std::string(":= ") + exit_if + std::string("\n");								//exit if jump
+	code += decl_label_code(on_false_label) + on_false->code;										//false label + code
+	code += decl_label_code(exit_if);														//exit label
+
+	CodeNode *node = new CodeNode;
+	node->code = code;
+	$$ = node;
   }
   ;
 
 while_statement:
-  WHILE LPR comparison_expression RPR block_statement { printf("while_statement -> WHILE LPR comparison_expression RPR block_statement\n");
+  WHILE LPR comparison_expression RPR block_statement {
+	CodeNode *cmp = $3;
+	CodeNode *on_true = $5;
 
+	std::string code = std::string("");
+	std::string temp = create_temp();
+	std::string return_loop = create_temp();
+	code += decl_temp_code(temp);
+	code += decl_label_code(return_loop) + cmp->code;										//return/start of loop + comparison code
+	code += std::string("! ") + temp + std::string(", ") + cmp->name + std::string("\n");	//todo: check that the cmp re-computes when necessary
+	std::string on_false = create_temp();
+
+	code += std::string("?:= ") + on_false + std::string(", ") + temp + std::string("\n");	//exit if false
+	code += on_true->code + std::string(":= ") + return_loop + std::string("\n");			//loop code + return to start of loop
+	code += decl_label_code(on_false);
+	CodeNode *node = new CodeNode;
+	node->code = code;
+	$$ = node;
   }
   ;
 
@@ -569,14 +636,24 @@ comparison_expression:
   ;
 
 break_statement:
-  BREAK{ printf("break_statement -> BREAK\n");
+  BREAK{
+  //{ printf("break_statement -> BREAK\n");
 	//todo: break is not a MIL code line
+  //}
+  CodeNode *node = new CodeNode;
+  node->code = std::string("break\n");
+  $$ = node;
   }
   ;
 
 continue_statement:
-  CONT { printf("continue_statement -> CONT\n");
+  CONT {
+    //{ printf("continue_statement -> CONT\n");
 	//todo: continue is not a MIL code line
+  //}
+  CodeNode *node = new CodeNode;
+  node->code = std::string("continue\n");
+  $$ = node;
   }
   ;
 
@@ -606,7 +683,7 @@ write_statement:
 		yyerror(message.c_str());
 	}
 
-	std::string code = std::string(".> ") + dst->name + std::string("\n");
+	std::string code = dst->code + std::string(".> ") + dst->name + std::string("\n");
 	CodeNode *node = new CodeNode;
 	node->code = code;
 	node->name = dst->name;
@@ -614,29 +691,32 @@ write_statement:
   }
   ;
 
-declaration_statement:	//todo: check that %type for statement and declaration_statement and var_list all line up
+declaration_statement:
   INT var_list {
 	Type t = Integer;
+  DeclNode *list = $2;
+  
+	CodeNode *node = new CodeNode;
+  $2->type = t;
+  node ->code = list->node.code;
+	
 
-	CodeNode *node = new CodeNode;	//todo: add code for backtrace? this node needs node->code = varlist->code, but needs to pass type down to var_list
-
-    // check to ensure the size is greater than 0
-    for(auto &value: node->var_list){
-      if(value.size <= 0){
-        std::string message = std::string("Attempting to declare array '") + value.name + std::string("' with size less than or equal to 0");
-        yyerror(message.c_str());
-      }
-      add_variable_to_symbol_table(value.name, t);
-    }
 
 	$$ = node;
 
   }
   | INT IDENT LBR NUM RBR {
-	Type t = Integer;
+	Type t = Array;
 	std::string name = $2;
 	std::string n = $4;
 
+        // check to ensure the size is greater than 0
+      if(std::stoi(n) < 0){
+        std::string message = std::string("Attempting to declare array '") + name + std::string("' with size less than or equal to 0");
+        yyerror(message.c_str());
+      }
+      add_variable_to_symbol_table(name, t);
+    
 	CodeNode *node = new CodeNode;
 	node->code = std::string(".[] ") + name + std::string(", ") + n + std::string("\n");
 	node->name = name;
@@ -644,12 +724,31 @@ declaration_statement:	//todo: check that %type for statement and declaration_st
   }
   ;
 
-var_list:
-  IDENT { printf("var_list -> IDENT\n");
+var_list:	//todo: needs error  checking for duplicate variables
+  IDENT {
 
+	std::string ident = $1;
+	add_variable_to_symbol_table(ident, $$->type);
+	std::string code = std::string(". ") + ident + std::string("\n");
+	CodeNode *node = new CodeNode;
+	node->code = code;
+	DeclNode *decl = new DeclNode;
+	decl->type = $$->type;
+	decl->node = *node;
+	$$ = decl;
   }
   | IDENT COMMA var_list { printf("var_list -> IDENT COMMA var_list\n");
-
+	std::string ident = $1;
+	DeclNode *more_vars = $3;
+	add_variable_to_symbol_table(ident, $$->type);
+	std::string code = more_vars->node.code;
+	code += std::string(". ") + ident + std::string("\n");
+	CodeNode *node = new CodeNode;
+	node->code = code;
+	DeclNode *decl = new DeclNode;
+	decl->type = $$->type;
+	decl->node = *node;
+	$$ = decl;
   }
   ;
 
@@ -750,7 +849,7 @@ factor:
 	std::string value = $1;
 	std::string temp = create_temp();
 	std::string code = decl_temp_code(temp);
-	code += std::string("= ") + temp + std::string(", ") + value;	//todo: not sure if this works for any x.xx number
+	code += std::string("= ") + temp + std::string(", ") + value + std::string("\n");	//todo: not sure if this works for any x.xx number
 	node->code = code;
 	node->name = temp;
 	$$ = node;
@@ -763,6 +862,7 @@ factor:
     }
 
 	CodeNode *node = new CodeNode;
+	node->code = std::string("");
 	node->name = ident;
 	$$ = node;
   }
@@ -799,7 +899,7 @@ factor:
     node->name = temp;
     $$ = node;
   }
-  | NOT factor { printf("factor -> NOT factor\n");
+  | NOT factor {
     CodeNode *factor = $2;
     std::string temp = create_temp();
     std::string code = factor->code + decl_temp_code(temp);
